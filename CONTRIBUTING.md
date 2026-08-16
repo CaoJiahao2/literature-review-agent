@@ -5,7 +5,7 @@ Thanks for your interest in making **literature-review-agent** better! 🎉
 ## Development setup
 
 ```bash
-git clone https://github.com/<your-org>/literature-review-agent.git
+git clone https://github.com/CaoJiahao2/literature-review-agent.git
 cd literature-review-agent
 pip install -e ".[dev,ui]"
 cp .env.example .env   # then set LLM_API_KEY

@@ -21,5 +21,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 35 offline tests + 6 network-marked tests.
 - MIT license, README (English + 简体中文), CONTRIBUTING, SECURITY, GitHub issue/PR templates.
 
-[Unreleased]: https://github.com/<your-org>/literature-review-agent/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/<your-org>/literature-review-agent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/CaoJiahao2/literature-review-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/CaoJiahao2/literature-review-agent/releases/tag/v0.1.0

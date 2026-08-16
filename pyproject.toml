@@ -58,9 +58,9 @@ ui = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/<your-org>/literature-review-agent"
-Repository = "https://github.com/<your-org>/literature-review-agent"
-Issues = "https://github.com/<your-org>/literature-review-agent/issues"
+Homepage = "https://github.com/CaoJiahao2/literature-review-agent"
+Repository = "https://github.com/CaoJiahao2/literature-review-agent"
+Issues = "https://github.com/CaoJiahao2/literature-review-agent/issues"
 
 [project.scripts]
 lit-review = "lit_review.cli:app"

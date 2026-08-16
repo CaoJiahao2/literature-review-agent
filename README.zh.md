@@ -23,7 +23,7 @@
 ## 📦 安装
 
 ```bash
-git clone https://github.com/<your-org>/literature-review-agent.git
+git clone https://github.com/CaoJiahao2/literature-review-agent.git
 cd literature-review-agent
 pip install -e ".[dev,ui]"
 cp .env.example .env
