@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lit-review"
+version = "0.1.0"
+description = "AI-focused literature review agent that turns a research topic into a structured Markdown report, queried from multiple academic sources."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Literature Review Agent Contributors" },
+]
+keywords = [
+    "literature-review",
+    "research",
+    "ai",
+    "arxiv",
+    "rag",
+    "langgraph",
+    "agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+dependencies = [
+    "langgraph>=0.3,<2.0",
+    "langchain-core>=0.3,<2.0",
+    "langchain-openai>=0.3,<2.0",
+    "typer>=0.15",
+    "rich>=13",
+    "httpx>=0.27",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+ui = [
+    "gradio>=4,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/<your-org>/literature-review-agent"
+Repository = "https://github.com/<your-org>/literature-review-agent"
+Issues = "https://github.com/<your-org>/literature-review-agent/issues"
+
+[project.scripts]
+lit-review = "lit_review.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lit_review = ["py.typed"]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that hit live HTTP endpoints",
+]
+asyncio_mode = "auto"
