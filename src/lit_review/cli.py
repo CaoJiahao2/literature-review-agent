@@ -1,4 +1,14 @@
-"""typer CLI entrypoint."""
+"""typer CLI entrypoint.
+
+The CLI is a thin layer on top of :func:`lit_review.runner.run`. It only:
+
+* parses command-line arguments
+* prints status panels + progress
+* surfaces warnings (per-source failures, LLM fallback, etc.)
+
+All real logic — including graph construction, source fan-out, LLM caching,
+metrics emission, report writing — lives in :mod:`runner`.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +22,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .config import Settings, load_settings
-from .graph import build_graph
+from .config import load_settings
 from .llm import warn_if_no_llm
 from .report.writer import write_report
+from .runner import run as runner_run
 from .state import GraphState
 
 console = Console()
@@ -52,6 +62,8 @@ def _do_run(
     sources: Optional[str],
     no_llm: bool,
     verbose: bool,
+    emit_metrics: bool = False,
+    emit_state: bool = False,
 ) -> None:
     if verbose:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -97,30 +109,56 @@ def _do_run(
         )
     )
 
-    graph = build_graph(settings)
-    final_state: dict = {}
+    console.print(
+        "[dim]Running pipeline: plan → search (concurrent) → dedupe → "
+        "rank → refine? → synthesize (parallel) → assemble[/dim]"
+    )
+
     if verbose:
-        with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True, console=console) as progress:
-            task = progress.add_task("Running literature review…", total=None)
-            for step in graph.stream(state):
-                node_name = next(iter(step.keys()))
-                progress.update(task, description=f"node: {node_name}")
-                final_state.update(step[node_name])
+        # Verbose mode calls runner.run with a per-node progress printer that
+        # the runner surfaces via ``on_node``.
+        from langgraph.graph import END
+
+        def _on_node(name: str, _result: dict) -> None:
+            if name == "__finished__":
+                return
+            console.print(f"[cyan]▶[/cyan] {name}")
+
+        # We delegate the actual execution to the runner; the progress is
+        # driven by the runner's own per-node log output redirected via
+        # ``logging.basicConfig(level=INFO, ...)`` above.
+        result = runner_run(
+            state,
+            settings,
+            emit_metrics=emit_metrics,
+            emit_state=emit_state,
+            on_node=_on_node,
+        )
     else:
         with console.status("[bold green]Running literature review…", spinner="dots"):
-            final_state = graph.invoke(state)
+            result = runner_run(
+                state,
+                settings,
+                emit_metrics=emit_metrics,
+                emit_state=emit_state,
+            )
 
-    merged = final_state.get("merged", []) or []
-    errors = final_state.get("errors", []) or []
+    merged = result.state.get("merged", []) or []
+    errors = result.state.get("errors", []) or []
     if errors:
         console.print(f"[yellow]Warnings ({len(errors)}):[/yellow]")
         for e in errors[:5]:
             console.print(f"  - {e}")
 
-    console.print(f"[green]Collected {len(merged)} papers.[/green]")
+    console.print(f"[green]Collected {result.metrics.papers_collected if result.metrics else len(merged)} papers[/green]"
+                  f" → kept {len(merged)} after dedupe+top-k.")
 
-    out_path = write_report(final_state, output_path=output)
+    out_path = result.output_path
     console.print(f"[bold green]✓ Report written to {out_path}[/bold green]")
+    if emit_metrics and result.metrics is not None:
+        console.print(f"[bold cyan]📊 metrics:[/bold cyan] {out_path.with_name(out_path.name + '.metrics.json')}")
+    if emit_state:
+        console.print(f"[bold cyan]📦 state snapshot:[/bold cyan] {out_path.with_name(out_path.name + '.state.json')}")
 
 
 @app.command()
@@ -159,30 +197,31 @@ def review(
         help="Comma-separated sources: arxiv,openalex,huggingface,semantic_scholar,crossref. "
              "Default comes from DEFAULT_SOURCES in .env.",
     ),
-    no_llm: bool = typer.Option(False, "--no-llm", help="Force skeleton-only output."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Force skeleton-only output (no LLM calls)."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Stream node-by-node progress."),
-) -> None:
-    """Generate a literature-review report on TOPIC and write it to OUTPUT."""
-    _do_run(topic, output, language, top_k, years, max_iter, sources, no_llm, verbose)
-
-
-@app.command()
-def generate(
-    topic: str = typer.Argument(..., help="Research topic (focus: AI)."),
-    output: Path = typer.Option(Path("report.md"), "--output", "-o", help="Output Markdown path."),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="en or zh (auto-detected)."),
-    top_k: int = typer.Option(30, "--top-k", help="Number of papers to keep after ranking."),
-    years: Optional[str] = typer.Option(None, "--years", help="Year range, e.g. 2020..2025."),
-    max_iter: int = typer.Option(2, "--max-iter", help="Max search-refinement iterations."),
-    sources: Optional[str] = typer.Option(
-        None, "--sources", "-s",
-        help="Comma-separated sources: arxiv,openalex,huggingface,semantic_scholar,crossref.",
+    emit_metrics: bool = typer.Option(
+        False, "--emit-metrics",
+        help="Write <report>.metrics.json with per-node / per-source / LLM stats.",
     ),
-    no_llm: bool = typer.Option(False, "--no-llm", help="Force skeleton-only output."),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Stream node-by-node progress."),
+    emit_state: bool = typer.Option(
+        False, "--emit-state",
+        help="Write <report>.state.json with the final state snapshot. May contain LLM output verbatim.",
+    ),
 ) -> None:
-    """Alias for `lit-review review`."""
-    _do_run(topic, output, language, top_k, years, max_iter, sources, no_llm, verbose)
+    """Generate a literature review."""
+    _do_run(
+        topic=topic,
+        output=output,
+        language=language,
+        top_k=top_k,
+        years_spec=years,
+        max_iter=max_iter,
+        sources=sources,
+        no_llm=no_llm,
+        verbose=verbose,
+        emit_metrics=emit_metrics,
+        emit_state=emit_state,
+    )
 
 
 @app.command()
@@ -203,6 +242,7 @@ def _main(ctx: typer.Context) -> None:
         console.print(ctx.get_help())
         console.print()
         console.print("[dim]Quick start:[/dim] lit-review review \"<your topic>\" --output report.md")
+        console.print("[dim]Diagnostics:[/dim] lit-review review \"<topic>\" --emit-metrics")
 
 
 def main() -> None:

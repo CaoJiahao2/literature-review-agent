@@ -1,56 +1,64 @@
-# 📚 Literature Review Agent
+# 📚 Literature Review Agent（文献调研 Agent）
 
-> A LangGraph-based agent that turns an AI research topic into a comprehensive Markdown literature review — pulled from 5 academic sources, deduplicated, ranked, and written by an LLM.
+> 一个基于 LangGraph 的 AI 文献调研 Agent：根据研究课题自动检索多源学术数据库、生成结构化 Markdown 综述报告。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-1f6feb)](https://github.com/langchain-ai/langgraph)
 [![Sources: 5](https://img.shields.io/badge/sources-arXiv%20%7C%20OpenAlex%20%7C%20HF%20%7C%20S2%20%7C%20Crossref-orange)]()
 
-**English** | [简体中文](./README.zh.md)
+[English](./README.en.md) | **简体中文**
+
+📘 **架构与设计文档**（中文）位于 [`docs/zh/`](./docs/zh/) —— 开发者可从 [`docs/zh/ARCHITECTURE.md`](./docs/zh/ARCHITECTURE.md) 开始阅读。
 
 ---
 
-## ✨ Features
+## ✨ 功能特性
 
-- 🔍 **Multi-source search** — concurrent queries to arXiv, OpenAlex, Hugging Face Daily Papers, Semantic Scholar, and Crossref.
-- 🧠 **LLM-driven planning + synthesis** — an LLM proposes search queries and writes each section. Graceful skeleton-only fallback when no key is set.
-- 🕸️ **LangGraph StateGraph** — explicit nodes for plan → parallel search → dedupe/rank → conditional refine → section synthesis → assembly.
-- 🌐 **English + Chinese** — auto-detects CJK characters; `--language en|zh` to override.
-- 📊 **Explainable ranking** — `0.5·citation + 0.3·recency + 0.2·abstract_richness`; cross-source dedupe by DOI / arXiv ID / normalized title (union).
-- 🖥️ **CLI + Web UI** — `lit-review review "topic"` for one-shot; `lit-review ui` for a Gradio dashboard with source checkboxes.
+- 🔍 **多源检索** — 同时从 arXiv、OpenAlex、Hugging Face Daily Papers、Semantic Scholar、Crossref 五大数据库并发检索 AI 文献。
+- 🧠 **LLM 驱动规划** — 用大语言模型生成关键词查询、撰写综述正文。如果未配置 LLM，会自动降级为确定性的骨架报告。
+- 🕸️ **LangGraph 状态图** — 显式 StateGraph，包含查询规划 → 并行检索 → 去重排序 → 条件式细化 → 章节合成 → 报告拼装的完整流程。
+- 🌐 **中英双语** — 自动检测 CJK 字符判定语言，也支持 `--language en|zh` 强制指定。
+- 📊 **可解释的排名** — 引用数 + 时新度 + 摘要丰富度三维评分，跨源去重按 DOI / arXiv ID / 标准化标题匹配。
+- 🖥️ **CLI + Web UI** — `lit-review review` 命令行一行产出；`lit-review ui` 启动 Gradio 浏览器界面可勾选数据源。
+- ⚡ **异步并发拉取** — 每个数据源、每个查询都用受控信号量并发触发，避免串行等待。
+- 🤖 **LLM 客户端封装** — 透明缓存（`LIT_REVIEW_CACHE_DIR`）、重试 / 退避、token 用量统计。
+- 📊 **内建可观测性** — `--emit-metrics` 写出每节点耗时、各源命中数、LLM 用量；`--emit-state` 写出调试用状态快照。
 
-## 📦 Installation
+## 📦 安装
 
 ```bash
 git clone https://github.com/CaoJiahao2/literature-review-agent.git
 cd literature-review-agent
 pip install -e ".[dev,ui]"
 cp .env.example .env
-# edit .env and set LLM_API_KEY (any OpenAI-compatible endpoint)
+# 编辑 .env，填入 LLM_API_KEY（任何 OpenAI 兼容端点都可以）
 ```
 
-## 🚀 Quick start
+## 🚀 快速开始
 
 ```bash
-# 1. CLI: search + synthesize
+# 1. 命令行：检索 + 综述
 lit-review review "RAG with knowledge graphs" --output reports/rag.md
 
-# 2. Chinese topic (auto-detected)
+# 2. 中文课题（自动识别）
 lit-review review "扩散模型在图像生成中的进展" --language zh --output reports/diffusion.md
 
-# 3. Skeleton-only (no LLM)
+# 3. 不要 LLM（纯骨架报告）
 lit-review review "RLHF" --no-llm --top-k 20 --years 2020..2025
 
-# 4. Web UI
+# 4. 启动 Web UI
 lit-review ui
-# then open http://127.0.0.1:7860
+# 浏览器访问 http://127.0.0.1:7860
 
-# 5. Show resolved config
+# 5. 查看配置
 lit-review config
+
+# 6. 启用可观测性（会写 `<report>.metrics.json` 与 `<report>.state.json`）
+lit-review review "RAG with knowledge graphs" --emit-metrics --emit-state
 ```
 
-## 🗂️ Architecture
+## 🗂️ 架构
 
 ```
 [START] → plan → search_sources → dedupe_rank → filter_top_k → synthesize_sections → assemble → [END]
@@ -58,98 +66,96 @@ lit-review config
                                        └── refine_search ┘ (loop, max 2)
 ```
 
-| Node | Purpose |
+节点详情：
+
+| 节点 | 作用 |
 |---|---|
-| `plan` | LLM proposes 4–6 keyword queries (deterministic fallback) |
-| `search_sources` | Run every enabled source against the queries |
-| `dedupe_rank` | Cluster by DOI / arXiv ID / title-hash union; score & sort |
-| `filter_top_k` | Keep the top K |
-| `should_refine` | Conditional edge: if corpus is thin and `iteration < max_iter`, refine |
-| `refine_search` | LLM proposes new queries; search again |
-| `synthesize_sections` | Write each of 6 sections (background → open problems) |
-| `assemble` | Render Markdown and write to disk |
+| `plan` | 让 LLM（或回退模板）生成 4–6 个关键词查询 |
+| `search_sources` | 在每个已启用的数据源上并发搜索 |
+| `dedupe_rank` | 按 DOI / arXiv ID / 标题三元并集去重，按 0.5·引用 + 0.3·时新度 + 0.2·摘要丰富度排名 |
+| `filter_top_k` | 保留前 K 篇 |
+| `should_refine` | 条件边：若语料不足且未达迭代上限，转入细化 |
+| `refine_search` | 让 LLM 生成新查询，再搜一遍 |
+| `synthesize_sections` | 按"背景 / 方法 / 数据集 / 趋势 / 开放问题"逐章调用 LLM 撰写 |
+| `assemble` | 拼接为 Markdown 报告并落盘 |
 
-## 📚 Sources
+## 📚 数据源
 
-| Source | Free? | API key | What it gives you |
+| 数据源 | 是否免费 | 是否需要 Key | 特点 |
 |---|---|---|---|
-| **arXiv** | ✅ | — | Preprints (AI-heavy), full abstracts |
-| **OpenAlex** | ✅ | — | Broad coverage, citation counts, venues |
-| **Hugging Face Daily Papers** | ✅ | — | Curated trending AI papers (last 7 days), TLDRs |
-| **Semantic Scholar** | ✅ | optional `S2_API_KEY` | Rich metadata; rate-limited without key |
-| **Crossref** | ✅ | — | DOI / citation metadata across all disciplines |
+| **arXiv** | ✅ | ❌ | 预印本，AI 文献密集，含完整摘要 |
+| **OpenAlex** | ✅ | ❌ | 跨学科覆盖，含引用数与会议期刊 |
+| **Hugging Face Daily Papers** | ✅ | ❌ | 社区策展的近 14 天 AI 热门，含 AI 摘要 |
+| **Semantic Scholar** | ✅ | 可选 `S2_API_KEY` | 丰富的元数据与 TLDR；无 key 会被限流 |
+| **Crossref** | ✅ | ❌ | DOI / 引用元数据，跨学科 |
 
-Default in `.env`: `arxiv,openalex,huggingface` (the three no-key sources with best AI coverage).
+默认启用（`DEFAULT_SOURCES` in `.env`）：`arxiv,openalex,huggingface`。
 
-## ⚙️ Configuration (`.env`)
+## ⚙️ 配置（`.env`）
 
 ```bash
-# LLM (any OpenAI-compatible endpoint)
+# LLM（任何 OpenAI 兼容端点）
 LLM_API_KEY=sk-...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 
-# Per-source per-query caps
+# 各源单查询上限
 ARXIV_MAX_PER_QUERY=15
 OPENALEX_MAX_PER_QUERY=15
 HUGGINGFACE_MAX_PER_QUERY=20
 SEMANTIC_SCHOLAR_MAX_PER_QUERY=10
 CROSSREF_MAX_PER_QUERY=10
 
-# HuggingFace trending-papers lookback
+# HuggingFace 回溯天数
 HUGGINGFACE_LOOKBACK_DAYS=7
 
-# Default sources (comma-separated)
+# 默认启用的源（逗号分隔）
 DEFAULT_SOURCES=arxiv,openalex,huggingface
 
-# Semantic Scholar optional key: https://www.semanticscholar.org/product/api
+# Semantic Scholar 可选 Key：https://www.semanticscholar.org/product/api
 S2_API_KEY=
 
-# HTTP
+# 网络
 REQUEST_TIMEOUT=30
 USER_AGENT=LiteratureReviewAgent/0.1 (mailto:agent@example.com)
 ```
 
-## 🛠️ CLI reference
+## 🛠️ CLI 参考
 
 ```bash
-lit-review review "topic" [options]
-  --output, -o PATH      Markdown output path (default report.md)
-  --language, -l en|zh   Report language (default auto-detect)
-  --top-k INT            Papers to keep after ranking (default 30)
-  --years YYYY..YYYY     Year range (default last 5 years)
-  --max-iter INT         Max search-refinement iterations (default 2)
-  --sources, -s LIST     Comma-separated sources to query
-  --no-llm               Force skeleton-only output
-  --verbose, -v          Stream node-by-node progress
+lit-review review "topic" [选项]
+  --output, -o PATH      输出 Markdown 路径（默认 report.md）
+  --language, -l en|zh   报告语言（默认按 CJK 自动检测）
+  --top-k INT            保留前 K 篇（默认 30）
+  --years YYYY..YYYY     年份范围（默认近 5 年）
+  --max-iter INT         细化搜索最大轮数（默认 2）
+  --sources, -s LIST     逗号分隔的源列表
+  --no-llm               强制骨架模式
+  --verbose, -v          打印每个节点的进度
 
 lit-review ui [--host H] [--port N] [--share]
 lit-review config
 ```
 
-## 🧪 Development
+## 🧪 开发
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                       # all tests (offline + network-marked)
-pytest -q -m "not network"      # offline only
+pytest -q                       # 离线 + 网络标记测试
+pytest -q -m "not network"      # 仅离线
 ```
 
-Test layout:
+测试组成：
 
-- **35 offline tests** — state, templates, rank/dedupe, CLI, graph, UI assembly (~0.7s)
-- **6 network tests** — live arXiv / OpenAlex / Crossref / HF / S2 calls; CI should skip with `-m "not network"`
+- **离线（74 个）** — 状态、模板、排序、CLI、图、异步并发、LLM 客户端、指标，约 1.8s
+- **网络标记（6 个）** — arXiv / OpenAlex / Crossref / HuggingFace / Semantic Scholar 真实端到端
 
-## 🐛 Troubleshooting
+## 🐛 故障排查
 
-- **OpenAlex 429** — register a contact email and put it in `USER_AGENT` (`mailto=...`), or set `S2_API_KEY` to lean on other sources.
-- **`Unknown scheme for proxy URL (socks://…)`** — we disable env proxies by default. To use an HTTP proxy, set `HTTPS_PROXY=http://proxy:port`.
-- **Gradio UI won't start** — `pip install -e ".[ui]"` (the base install doesn't pull gradio).
+- **OpenAlex 一直 429** — 在 OpenAlex 注册邮箱并设置 `mailto=...` 到 `USER_AGENT`，或加 `S2_API_KEY` 增强其它源。
+- **`langchain-openai` 报 `Unknown scheme for proxy URL`** — 我们已禁用环境代理；如需使用 HTTP 代理，请设置 `HTTPS_PROXY=http://...`。
+- **Gradio UI 起不来** — 运行 `pip install -e ".[ui]"`，确认 `gradio` 已安装。
 
-## 🤝 Contributing
+## 📄 许可证
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Adding a new source is straightforward — implement the `(settings, queries, *, max_per_query, years) -> list[Paper]` interface, register it in `tools/__init__.py`, and add a test.
-
-## 📄 License
-
-[MIT](./LICENSE) — see the file for the full text.
+本项目使用 [MIT License](./LICENSE)。

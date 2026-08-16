@@ -90,7 +90,17 @@ class GraphState(dict):
 
     LangGraph passes dicts through nodes; we use a plain dict subclass with
     documented keys so any node can read/write safely.
+
+    The ``__dunder__`` keys are **internal channels** that must be declared
+    here: LangGraph only carries keys it knows about across nodes, so an
+    undeclared key (e.g. one a node writes in place) would be silently
+    stripped from the state and lost.
     """
+
+    # Internal channels — see module docstring for why they're declared.
+    __node_times__: dict[str, int] = {}
+    __dedupe_stats__: dict[str, int] = {}
+    __llm_client__: Any = None
 
     topic: str
     language: str = "en"

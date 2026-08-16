@@ -18,6 +18,25 @@ from .nodes import (
 from .edges import should_refine
 
 
+def _wrap_node(fn, settings: Settings):
+    """Bind ``settings`` and forward the internal ``__node_times__`` channel.
+
+    ``timed_node`` records wall-clock by mutating the node's input state in
+    place, but LangGraph only merges the *returned* partial dict. We copy the
+    (mutated) timing bucket into the return value so per-node timings survive
+    and accumulate across the whole run.
+    """
+
+    def wrapped(s: dict) -> dict:
+        out = fn(s, settings)
+        times = dict(s.get("__node_times__") or {})
+        times.update(out.get("__node_times__") or {})
+        out["__node_times__"] = times
+        return out
+
+    return wrapped
+
+
 def build_graph(settings: Settings):
     """Compile the literature-review graph.
 
@@ -29,13 +48,13 @@ def build_graph(settings: Settings):
     """
     g = StateGraph(GraphState)
 
-    g.add_node("plan", lambda s: plan_node(s, settings))
-    g.add_node("search_sources", lambda s: search_sources_node(s, settings))
-    g.add_node("dedupe_rank", lambda s: dedupe_rank_node(s, settings))
-    g.add_node("filter_top_k", lambda s: filter_top_k_node(s, settings))
-    g.add_node("refine_search", lambda s: refine_search_node(s, settings))
-    g.add_node("synthesize_sections", lambda s: synthesize_sections_node(s, settings))
-    g.add_node("assemble", lambda s: assemble_node(s, settings))
+    g.add_node("plan", _wrap_node(plan_node, settings))
+    g.add_node("search_sources", _wrap_node(search_sources_node, settings))
+    g.add_node("dedupe_rank", _wrap_node(dedupe_rank_node, settings))
+    g.add_node("filter_top_k", _wrap_node(filter_top_k_node, settings))
+    g.add_node("refine_search", _wrap_node(refine_search_node, settings))
+    g.add_node("synthesize_sections", _wrap_node(synthesize_sections_node, settings))
+    g.add_node("assemble", _wrap_node(assemble_node, settings))
 
     g.add_edge(START, "plan")
     g.add_edge("plan", "search_sources")

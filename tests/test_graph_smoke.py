@@ -48,9 +48,11 @@ def test_graph_no_llm_writes_full_report(tmp_path: Path, settings: Settings):
 
 
 def test_skeleton_only_path_when_llm_missing(monkeypatch, tmp_path: Path, settings: Settings):
-    """Run the graph entirely offline with no-llm + empty mocked sources.
+    """Run the graph entirely offline with no-llm + mocked sources.
 
-    We monkeypatch the search tools so the test never hits the network.
+    We monkeypatch the node-level ``_run_sources`` helper (the seam the graph
+    nodes actually call) so the test never touches the network — neither the
+    async fan-out nor the sync fallback.
     """
     from lit_review.graph import nodes as nodes_mod
     from lit_review.state import Paper
@@ -62,7 +64,7 @@ def test_skeleton_only_path_when_llm_missing(monkeypatch, tmp_path: Path, settin
 
     monkeypatch.setattr(
         nodes_mod,
-        "run_sources",
+        "_run_sources",
         lambda *a, **kw: (fake, []),
     )
 
@@ -87,3 +89,29 @@ def test_skeleton_only_path_when_llm_missing(monkeypatch, tmp_path: Path, settin
     assert "## References" in text
     assert "[1] X" in text  # author in refs
     assert "Paper 1" in text  # a paper title appears
+
+
+
+def test_synthesize_node_works_under_running_event_loop(settings: Settings):
+    """The node must not call asyncio.run() from an already-running loop.
+
+    Regression: v0.2's try/except both called ``asyncio.run``, which raises
+    ``RuntimeError`` when a loop is already bound to the thread (Gradio/Jupyter
+    hosts, LangGraph async streaming). It must offload to a worker thread.
+    """
+    import asyncio
+
+    from lit_review.graph import nodes as nodes_mod
+    from lit_review.state import GraphState
+
+    state = GraphState(topic="x", language="en", no_llm=True, merged=[])
+
+    async def _call_sync_in_coroutine():
+        # Runs in the same thread as the (running) loop — the buggy path.
+        return nodes_mod.synthesize_sections_node(state, settings)
+
+    result = asyncio.run(_call_sync_in_coroutine())
+    names = {spec.name for spec in nodes_mod.SECTIONS}
+    assert set(result["sections"].keys()) == names
+    # Every section has a body (skeleton in no-llm mode).
+    assert all(v for v in result["sections"].values())
