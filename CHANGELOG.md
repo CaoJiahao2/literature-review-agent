@@ -7,70 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.h
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-26
+
 ### Added
-- 🔌 **Unified runner** — `lit_review.runner.run()` is now the single seam for
-  both CLI and Gradio UI. The UI no longer imports the CLI's private helpers.
-- ⚡ **Async source fan-out** — `tools.async_runner.run_sources_async()` runs
-  every (source, query) pair concurrently with a bounded semaphore. arXiv,
-  OpenAlex, Semantic Scholar, and Crossref each have an async implementation;
-  Hugging Face keeps its sync loop (one HTTP per day is already optimal).
-- 🤖 **LLM client facade** — `lit_review.llm_client.LLMClient` adds:
-  * In-process LRU + optional disk caching (`LIT_REVIEW_CACHE_DIR`)
-  * Exponential backoff retry on `Timeout`/`Connection`/`RateLimit`/`5xx`
-  * Token usage accumulation; surfaced through `metrics.json`
-  * Lenient JSON parsing via `invoke_json()` for structured-output workflows
-- 📊 **Observability** — `lit_review.metrics.Metrics` + `timed_node` decorate
-  every node so we know how long it ran, how many papers each source yielded,
-  and how many tokens the LLM consumed. `--emit-metrics` writes
-  `<report>.metrics.json`; `--emit-state` writes `<report>.state.json` for
-  debugging.
-- 🇨🇳 **Chinese documentation set** — `docs/zh/` ships ARCHITECTURE,
-  DESIGN, STATE, SOURCES, RANKING, LLM, OBSERVABILITY, TROUBLESHOOTING, and
-  DEVELOPMENT guides.
-- 🧪 **New tests** (offline-only):
-  * `tests/test_metrics.py` — `Metrics`, `timed_node`
-  * `tests/test_llm_client.py` — cache, retry, JSON parse
-  * `tests/test_async_runner.py` — registration, sync fallback, error collection
-  * `tests/test_runner.py` — `RunResult`, `_normalize_state`
-- 🛠️ **CLI** flags: `--emit-metrics`, `--emit-state`
+- 🤖 **Single ReAct Agent** — the deterministic LangGraph pipeline
+  (plan → search → dedupe → refine → synthesize) is replaced by one ReAct
+  agent (`lit_review.agent.ReviewAgent`) that drives the whole flow via native
+  function calling (`bind_tools`). The hand-written loop parses
+  `AIMessage.tool_calls`, executes tools, and appends `ToolMessage` results back
+  into the running message memory.
+- 🧰 **Native function-calling tools** (`lit_review.agent.tools`) — the five
+  data sources are wrapped as `search_arxiv` / `search_openalex` /
+  `search_huggingface` / `search_semantic_scholar` / `search_crossref`, plus
+  `list_papers`, `submit_report`, and two explicit self-reflection tools.
+- 🪞 **Self-reflection** — `review_search_coverage` critiques the current query
+  coverage and suggests follow-up searches; `review_report_draft` critiques the
+  current section drafts with per-section revision notes. Both use nested LLM
+  calls through `LLMClient.invoke_json`.
+- 🧠 **Working memory + cross-run persistence** (`lit_review.memory`) — the
+  message transcript, collected papers, drafts, and reflections live in
+  `AgentState` during a run; on completion a per-topic JSON snapshot is saved
+  under `MEMORY_DIR`. `--resume` / `resume_memory` injects prior sections and
+  paper list back into the system prompt.
+- 🛡️ **Hallucination-resistant references** — `submit_report` only accepts
+  section bodies; the reference list is generated from the *actually collected*
+  corpus via `merge_and_rank`, so the model cannot invent citations.
+- 🧪 **New offline tests** — `tests/test_agent.py` (ReAct loop, tool execution,
+  message memory, `max_agent_steps`), `tests/test_tools.py` (respx-mocked search
+  tools), `tests/test_reflection.py` (both reflection tools), and
+  `tests/test_memory.py` (snapshot roundtrip + resume injection).
+- 📊 **Expanded metrics** — `steps`, `tool_calls`, `reflections`, and
+  `max_steps_reached` are now emitted alongside source / LLM / section stats.
 
 ### Changed
-- Section synthesis now runs the five chapter calls **in parallel** via
-  `asyncio.gather`, halving wall-clock on `gpt-4o-mini`-class models.
-- `Tools/_http.get_async_client` was added to mirror the sync helper.
-- The Gradio UI exposes the **metrics.json** as a separate download link.
+- **No more deterministic fallback** — `--no-llm` and the skeleton-body path are
+  removed. `require_llm()` raises `ConfigurationError` when `LLM_API_KEY` is
+  missing (CLI exit code 2), and endpoints without `tool_calls` support fail
+  fast instead of degrading to JSON mode.
+- **`runner.run` keeps its signature** but now delegates to `ReviewAgent`;
+  `RunResult.state` carries the new `AgentState` instead of `GraphState`.
+- **`LLMClient`** gains `bind_tools()` and `invoke_chat()` for the agent loop
+  (intentionally uncached), while `invoke_json` keeps its cache / retry /
+  fallback behavior for reflection sub-calls.
+- **CLI** drops `--max-iter`, adds `--resume`; the Gradio UI replaces the
+  skeleton checkbox with a “Resume prior memory” switch.
 
-### Fixed
-- **Async fan-out now honors per-source limits** — `async_runner` used to cap
-  every source at a hardcoded 10, ignoring `ARXIV_MAX_PER_QUERY` etc. from
-  `.env`. It now reads `<source>_max_per_query` from `Settings` (dead
-  `_default_cap`/`settings_default_cap` helpers removed).
-- **State channels survive LangGraph** — `__node_times__`, `__dedupe_stats__`,
-  and `__llm_client__` are now declared on `GraphState`, so they are no longer
-  stripped between nodes. Per-node timings and dedupe stats actually reach
-  `metrics.json`, and nodes share the runner's `LLMClient` (so token usage is
-  counted).
-- **`--verbose` streams real per-node progress** — the runner now executes the
-  graph via `graph.stream()` and fires `on_node` for every node (previously it
-  was a no-op that only fired once at the end).
-- **`synthesize_sections_node` no longer breaks under a running event loop** —
-  the old try/except both called `asyncio.run()`, which raises
-  `RuntimeError` when a loop is already bound to the thread (Gradio/Jupyter).
-  Synthesis now runs on a dedicated worker thread with its own loop.
-- The offline graph smoke test no longer touches the network (it mocked the
-  wrong seam, `run_sources` instead of `_run_sources`; the async path was
-  hitting live endpoints).
-- Duplicate `_strip_socks_proxies` definitions in `ui.py` (the unused one is
-  gone).
-- `ui.py` no longer reaches into `cli._do_run` private helpers.
-
-### Documentation
-- Renamed developer-facing docs to `docs/zh/`; the user-facing README.zh.md
-  remains unchanged.
-- New `docs/zh/RANKING.md` explains the score formula and tuning knobs.
-- **Primary README is now 简体中文** — `README.md` is the Chinese user guide;
-  the English guide moved to `README.en.md`. Cross-links in `README.md`,
-  `README.en.md`, `docs/README.md`, and `docs/zh/README.md` updated to match.
+### Removed
+- `src/lit_review/graph/` (builder, nodes, edges) and `tests/test_graph_smoke.py`.
+- `langgraph` runtime dependency and the `skeleton_body` report path.
 
 ## [0.1.0] — 2026-08-16
 
@@ -83,8 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.h
 - Pluggable OpenAI-compatible LLM backend; graceful skeleton-only fallback when no key set.
 - English + Chinese report generation (auto-detect CJK).
 - typer CLI (`lit-review review`, `lit-review config`) and Gradio Web UI (`lit-review ui`).
-- 35 offline tests + 6 network-marked tests (74 offline tests as of v0.2).
 - MIT license, README (English + 简体中文), CONTRIBUTING, SECURITY, GitHub issue/PR templates.
 
-[Unreleased]: https://github.com/CaoJiahao2/literature-review-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/CaoJiahao2/literature-review-agent/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/CaoJiahao2/literature-review-agent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CaoJiahao2/literature-review-agent/releases/tag/v0.1.0

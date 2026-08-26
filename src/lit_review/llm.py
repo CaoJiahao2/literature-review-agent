@@ -1,7 +1,8 @@
 """LLM factory: builds a ChatOpenAI pointed at any OpenAI-compatible endpoint.
 
-Returns `None` when no API key is configured, so the rest of the pipeline can
-degrade to deterministic skeleton output without special-casing.
+``build_chat_model`` returns ``None`` when no API key is configured; the ReAct
+agent has no deterministic fallback, so callers should use ``require_llm()``
+to fail fast with a clear ``ConfigurationError``.
 """
 
 from __future__ import annotations
@@ -41,13 +42,13 @@ def build_chat_model(settings: Settings, *, temperature: float = 0.2) -> Optiona
     )
 
 
-def warn_if_no_llm(settings: Settings, *, forced: bool = False) -> None:
-    """Emit a single warning when the LLM is unavailable."""
-    if forced:
-        return  # user explicitly opted out
+def require_llm(settings: Settings) -> None:
+    """Raise when the LLM is unavailable (the ReAct agent has no skeleton fallback)."""
     if not settings.has_llm():
-        log.warning(
-            "LLM_API_KEY is not set — falling back to a deterministic skeleton report. "
-            "Copy .env.example to .env and set LLM_API_KEY (any OpenAI-compatible provider) "
-            "to enable prose synthesis."
+        from .config import ConfigurationError
+
+        raise ConfigurationError(
+            "LLM_API_KEY is not set. This agent requires any OpenAI-compatible "
+            "endpoint; copy .env.example to .env and configure LLM_API_KEY "
+            "(LLM_BASE_URL / LLM_MODEL optional)."
         )

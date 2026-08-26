@@ -11,7 +11,7 @@ The async runner dispatches all (source, query) pairs concurrently with a
 configurable semaphore, capping open connections so polite-pool limits (e.g.
 OpenAlex / S2) are respected.
 
-Usage from a graph node::
+Usage (kept for future concurrent-search optimization)::
 
     from ..tools.async_runner import run_sources_async
 

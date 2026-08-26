@@ -45,7 +45,7 @@ import gradio as gr  # noqa: E402  (must come after _strip_socks_proxies)
 
 from .config import load_settings
 from .runner import run as runner_run
-from .state import GraphState
+from .state import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -80,9 +80,8 @@ def _run_ui(
     top_k: int,
     year_start: int,
     year_end: int,
-    max_iter: int,
     sources: list[str],
-    no_llm: bool,
+    resume: bool,
     progress=gr.Progress(track_tqdm=False),
 ) -> tuple[str, str, str | None, str | None]:
     """Run the agent via the unified :func:`runner.run` and return result artifacts."""
@@ -90,6 +89,7 @@ def _run_ui(
         return "", "❌ Topic is required.", None, None
 
     settings = load_settings()
+    settings.resume_memory = bool(resume)
     output_dir = Path("reports")
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_topic = re.sub(r"[^A-Za-z0-9._-]+", "_", topic.strip())[:60]
@@ -109,14 +109,12 @@ def _run_ui(
     except Exception:
         return "", "❌ Invalid year range.", None, None
 
-    progress(0.15, f"Searching {len(enabled)} sources concurrently…")
-    state = GraphState(
+    progress(0.15, "Running ReAct agent: search → reflect → draft → revise…")
+    state = AgentState(
         topic=topic.strip(),
         language=lang,
         years=year_range,
         top_k=int(top_k),
-        max_iter=int(max_iter),
-        no_llm=bool(no_llm),
         output_path=str(output),
         verbose=False,
         sources=enabled,
@@ -166,8 +164,7 @@ def build_interface() -> gr.Blocks:
                     year_start = gr.Number(value=settings.year_window()[0], precision=0, label="From year")
                     year_end = gr.Number(value=settings.year_window()[1], precision=0, label="To year")
                 with gr.Row():
-                    max_iter = gr.Slider(0, 4, value=2, step=1, label="Max refine iterations")
-                    no_llm = gr.Checkbox(value=False, label="Skeleton-only (no LLM)")
+                    resume = gr.Checkbox(value=settings.resume_memory, label="Resume prior memory")
                 sources = gr.CheckboxGroup(
                     choices=[(f"{SOURCE_LABELS[s]}", s) for s in SOURCE_CHOICES],
                     value=default_sources,
@@ -184,7 +181,7 @@ def build_interface() -> gr.Blocks:
 
         run_btn.click(
             _run_ui,
-            inputs=[topic, language, top_k, year_start, year_end, max_iter, sources, no_llm],
+            inputs=[topic, language, top_k, year_start, year_end, sources, resume],
             outputs=[report_md, status, download, metrics_link],
         )
 

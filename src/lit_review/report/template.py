@@ -1,8 +1,8 @@
 """Markdown report template.
 
 The template is data-driven: a list of (section_name, section_title) pairs.
-Sections are rendered in order; missing bodies fall back to a placeholder that
-the skeleton-only path emits.
+Sections are rendered in order; missing bodies fall back to a placeholder
+(used only when a section is absent from the final submitted drafts).
 """
 
 from __future__ import annotations
@@ -46,20 +46,6 @@ SECTIONS: tuple[SectionSpec, ...] = (
 )
 
 
-def skeleton_body(spec: SectionSpec, papers: list) -> str:
-    """Build a non-LLM body that lists the most relevant papers for this section."""
-    if not papers:
-        return spec.placeholder
-    lines = [spec.placeholder, "", "**Relevant papers from the corpus:**", ""]
-    for p in papers[:8]:
-        authors = ", ".join(p.authors[:3]) + (" et al." if len(p.authors) > 3 else "")
-        year = f" ({p.year})" if p.year else ""
-        link = p.url or (f"https://doi.org/{p.doi}" if p.doi else (f"https://arxiv.org/abs/{p.arxiv_id}" if p.arxiv_id else ""))
-        snippet = (p.abstract[:240] + "…") if len(p.abstract) > 240 else p.abstract
-        lines.append(f"- **{p.title}**{year} — {authors}.{((' ' + link) if link else '')}")
-        if snippet:
-            lines.append(f"  - {snippet}")
-    return "\n".join(lines)
 
 
 def render_report(

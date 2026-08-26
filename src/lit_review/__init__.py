@@ -1,3 +1,7 @@
-"""Literature Review Agent — AI-focused Markdown literature reviews from arXiv + OpenAlex."""
+"""Literature Review Agent — a single ReAct agent for AI-focused literature reviews."""
 
-__version__ = "0.1.0"
+from .state import AgentState, Paper, SearchPlan
+
+__version__ = "0.2.0"
+
+__all__ = ["AgentState", "Paper", "SearchPlan"]

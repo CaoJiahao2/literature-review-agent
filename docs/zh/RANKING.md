@@ -78,18 +78,27 @@ score = 0.5 * nc + 0.3 * ny + 0.2 * nr
 
 ### 2.4 Top-K 截断
 
-`filter_top_k_node` 在 `score_and_sort` 之后做 `merged[:top_k]`。
-实测发现 top_k=30 是"综述能看完所有引用"的上限；>50 就会让 LLM 章节合成 prompt
-超过 16k tokens。
+`merge_and_rank(papers, top_k=top_k)` 在 `score_and_sort` 之后做 `merged[:top_k]`。
+在 ReAct 架构下，Top-K 截断发生在两个地方：
+
+- `submit_report`：用 `AgentState.papers` 做 `merge_and_rank(..., top_k=settings.top_k)`，
+  生成最终写入 References 的语料与 `state["merged"]`。
+- `list_papers`：用 `merge_and_rank(..., top_k=None)` 返回当前**去重排序后**的完整编号列表，
+  供 Agent 在撰写前对齐 `[#]` 引用编号。
+
+实测发现 top_k=30 是"综述能看完所有引用"的上限；>50 就会让 Agent 的消息转录
+（含论文清单 + 草稿）超过 16k tokens。
 
 ## 3. 章节相关性
 
-`synthesize_sections_node._papers_for_section(name, papers)`：
+ReAct Agent 中不再有硬编码的 `_papers_for_section` 切片。章节与论文的相关性由
+LLM 自主决定：Agent 在 `system prompt` 的约束下，先 `list_papers` 拿到带编号的
+参考文献列表，再逐节撰写，并按要求使用 `[#]` 引用编号。
 
-- **当前**：固定切片，从 `papers` 头部开始，按章节 `name` 偏移
-- **已计划 (v0.3)**：用 BM25 on `title + abstract` 计算与该章节 prompt 模板关键词的相似度
+**已计划 (v0.3)**：在 `list_papers` / `submit_report` 阶段用 BM25 on
+`title + abstract` 为每个章节预选相关性最高的论文，缩小 Agent 撰写时的引用候选集。
 
-参数：
+参数（旧确定性骨架遗留，现无运行时作用）：
 ```python
 offset = {
     "background": 0,
@@ -99,6 +108,3 @@ offset = {
     "open_problems": 8,
 }.get(name, 0)
 ```
-
-调整方法见源码。
-

@@ -7,10 +7,10 @@ Developer / Architecture docs (中文):
 
 * [ARCHITECTURE.md](./zh/ARCHITECTURE.md) — overall architecture, data flow, module map
 * [DESIGN.md](./zh/DESIGN.md) — design decisions and tradeoffs
-* [STATE.md](./zh/STATE.md) — `GraphState` / `Paper` / `Settings` field reference
+* [STATE.md](./zh/STATE.md) — `AgentState` / `Paper` / `Settings` field reference
 * [SOURCES.md](./zh/SOURCES.md) — data-source contract and extension guide
 * [RANKING.md](./zh/RANKING.md) — dedupe + scoring algorithm
-* [LLM.md](./zh/LLM.md) — `LLMClient` facade, caching, retries
+* [LLM.md](./zh/LLM.md) — `LLMClient` facade, caching, retries, function calling
 * [OBSERVABILITY.md](./zh/OBSERVABILITY.md) — metrics, logs, traces
 * [TROUBLESHOOTING.md](./zh/TROUBLESHOOTING.md) — common failure modes
 * [DEVELOPMENT.md](./zh/DEVELOPMENT.md) — dev workflow, testing, contribution

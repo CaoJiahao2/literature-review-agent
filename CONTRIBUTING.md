@@ -68,7 +68,7 @@ The codebase has two stable seams for contributors:
 If your change crosses either seam, update:
 * `docs/zh/ARCHITECTURE.md` (high-level diagram + data flow)
 * `docs/zh/DESIGN.md` (the corresponding *D<n>* design decision)
-* `docs/zh/STATE.md` (only if you add/remove GraphState keys)
+* `docs/zh/STATE.md` (only if you add/remove AgentState keys)
 
 ## Style
 
@@ -87,7 +87,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 feat: add Semantic Scholar source
 fix(rank): prefer non-OpenAlex URL when both sources expose one
 docs: surface OpenAlex 429 troubleshooting
-chore(deps): bump langgraph to 1.2.x
+chore(deps): bump langchain-openai
 ```
 
 ## Releasing

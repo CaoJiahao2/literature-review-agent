@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lit-review"
-version = "0.1.0"
-description = "AI-focused literature review agent that turns a research topic into a structured Markdown report, queried from multiple academic sources."
+version = "0.2.0"
+description = "Single ReAct agent that turns a research topic into a structured Markdown literature review, with native function-calling tools, memory, and self-reflection."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -18,8 +18,9 @@ keywords = [
     "ai",
     "arxiv",
     "rag",
-    "langgraph",
+    "react-agent",
     "agent",
+    "function-calling",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -37,7 +38,6 @@ classifiers = [
     "Topic :: Text Processing :: Markup :: Markdown",
 ]
 dependencies = [
-    "langgraph>=0.3,<2.0",
     "langchain-core>=0.3,<2.0",
     "langchain-openai>=0.3,<2.0",
     "typer>=0.15",

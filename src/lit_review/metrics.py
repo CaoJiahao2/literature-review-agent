@@ -59,15 +59,14 @@ def timed_node(state: dict, name: str) -> Iterator[None]:
         yield
     finally:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        # Use the maximum so v0.1-style re-entry by LangGraph doesn't double-count.
+        # Use the maximum so re-entry of the same block doesn't double-count.
         bucket[name] = max(int(bucket.get(name, 0)), elapsed_ms)
 
 
 def timed_node_decorator(name: str) -> Callable[[Callable[..., dict]], Callable[..., dict]]:
     """Decorator variant for cases where :func:`timed_node` is awkward.
 
-    The wrapped function still returns a partial state dict — same as any
-    LangGraph node.
+    The wrapped function still returns a partial state dict.
     """
     def deco(fn: Callable[..., dict]) -> Callable[..., dict]:
         def wrapper(state, settings) -> dict:

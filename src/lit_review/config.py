@@ -9,6 +9,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class ConfigurationError(RuntimeError):
+    """Raised when the agent cannot start because of missing configuration."""
+
+
 class Settings(BaseSettings):
     """Resolved from environment variables + optional `.env`."""
 
@@ -19,10 +23,15 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # LLM (any OpenAI-compatible endpoint).
+    # LLM (any OpenAI-compatible endpoint). Required for the ReAct agent.
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
+
+    # Agent loop controls.
+    max_agent_steps: int = 12
+    max_reflections: int = 1
+    resume_memory: bool = False
 
     # Source limits (per query).
     arxiv_max_per_query: int = 15
@@ -37,10 +46,17 @@ class Settings(BaseSettings):
 
     # HTTP.
     request_timeout: float = 30.0
-    user_agent: str = "LiteratureReviewAgent/0.1 (mailto:agent@example.com)"
+    user_agent: str = "LiteratureReviewAgent/0.2 (mailto:agent@example.com)"
+
+    # Cross-run memory.
+    memory_dir: Path = Field(default=Path("~/.lit_review/memory"))
 
     # Default year window: last 5 years.
     default_year_window: int = Field(default=5)
+
+    @property
+    def resolved_memory_dir(self) -> Path:
+        return self.memory_dir.expanduser().resolve()
 
     def enabled_sources(self) -> list[str]:
         """Parse `default_sources` into a list of enabled source names."""

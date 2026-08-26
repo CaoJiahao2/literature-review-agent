@@ -2,18 +2,15 @@
 
 > 给出**症状 → 原因 → 排查 → 解决**四段式清单。
 
-## T1. 报告只剩骨架，每个章节都是"占位"
+## T1. 启动即报 `LLM_API_KEY is not set`
 
-**症状**：报告里只有 `_No background section was generated. ...**Relevant papers from the corpus:** ..._`
+**症状**：`lit-review review "..."` 立即退出，终端显示红色 `Configuration error`，退出码 2。
 
-**原因**：
-1. `LLM_API_KEY` 未设置
-2. Key 设置错误（如 base_url 写错）
-3. 模型被网络拦截
+**原因**：ReAct Agent 没有确定性骨架降级路径；没有 LLM 就无法规划、调用工具与撰写报告。
 
 **排查**：
 ```bash
-lit-review config   # 看 has_llm 是否为 True
+lit-review config   # 看 LLM_API_KEY set 是否为 True
 echo $LLM_API_KEY | head -c 4   # 看前缀
 ```
 
@@ -22,11 +19,21 @@ echo $LLM_API_KEY | head -c 4   # 看前缀
 - Key 错：用 `curl https://<base_url>/v1/models -H "Authorization: Bearer $LLM_API_KEY"` 验证
 - 模型不对：在 `.env` 改 `LLM_MODEL`
 
-## T2. OpenAlex 一直报 429 Too Many Requests
+## T2. 启动即报 `Failed to build the chat model with tool calling support`
 
-**症状**：WARN 列表里出现多次 `openalex: HTTPError 429`
+**症状**：报 `ConfigurationError`，提示无法构建带 tool calling 的模型。
 
-**原因**：未进 polite pool；OpenAlex 对匿名 IP 限流严
+**原因**：端点不支持原生 function calling（`tool_calls`）。
+
+**解决**：
+- 换用支持 `tool_calls` 的 OpenAI 兼容端点（OpenAI、DeepSeek、Qwen、OpenRouter 等）
+- 本项目**不提供 JSON 降级**；端点不支持 `tool_calls` 直接报错，这是设计决策。
+
+## T3. OpenAlex 一直报 429 Too Many Requests
+
+**症状**：Agent 返回的搜索工具 JSON 里出现 `openalex` 错误或 WARN 列表里多次 `429`。
+
+**原因**：未进 polite pool；OpenAlex 对匿名 IP 限流严。
 
 **排查**：检查 `USER_AGENT` 是否包含 `mailto=`：
 ```bash
@@ -35,14 +42,14 @@ grep USER_AGENT .env
 应该看到 `mailto=your@email.com`
 
 **解决**：
-- 改 `.env`：`USER_AGENT=LiteratureReviewAgent/0.1 (mailto:your@email.com)`
+- 改 `.env`：`USER_AGENT=LiteratureReviewAgent/0.2 (mailto:your@email.com)`
 - 实在不行：暂时禁用 OpenAlex：`--sources arxiv,huggingface`
 
-## T3. `langchain-openai` 报 `Unknown scheme for proxy URL (socks://...)`
+## T4. `langchain-openai` 报 `Unknown scheme for proxy URL (socks://...)`
 
-**症状**：ImportError / 启动崩溃
+**症状**：ImportError / 启动崩溃。
 
-**原因**：`ALL_PROXY=socks://...` 时，httpx 默认会读出来用，而 socks 协议不在 httpx 支持范围
+**原因**：`ALL_PROXY=socks://...` 时，httpx 默认会读出来用，而 socks 协议不在 httpx 支持范围。
 
 **解决**：
 - 我们默认 `trust_env=False`，应该不会出现这条
@@ -52,7 +59,7 @@ grep USER_AGENT .env
   ```
 - 或用 HTTP proxy：`HTTPS_PROXY=http://proxy:8080`
 
-## T4. Gradio UI 起不来
+## T5. Gradio UI 起不来
 
 **症状**：`ModuleNotFoundError: No module named 'gradio'`
 
@@ -63,9 +70,9 @@ grep USER_AGENT .env
 pip install -e ".[ui]"
 ```
 
-## T5. Semantic Scholar 全部返回 0 个论文
+## T6. Semantic Scholar 全部返回 0 个论文
 
-**症状**：`source 'semantic_scholar' returned 0 results` + 一条 `rate-limited (no S2_API_KEY set)`
+**症状**：Agent 搜索 `semantic_scholar` 返回 0 条，WARN 里出现 `rate-limited (no S2_API_KEY set)`
 
 **原因**：S2 强限流，无 key 时 1 IP 每秒 1 请求
 
@@ -74,61 +81,60 @@ pip install -e ".[ui]"
 - 加到 `.env`：`S2_API_KEY=...`
 - 或禁用：`--sources arxiv,openalex,huggingface`
 
-## T6. 报告章节质量很差，引用错位
+## T7. Agent 达到 `max_agent_steps` 后失败
 
-**症状**：正文里出现 "[2]" 但 References 里只有 5 篇
+**症状**：终端显示红色 `Agent failed`，退出码 1；`.metrics.json` 里 `max_steps_reached: true`。
 
-**原因**：
-1. LLM 的引用编号与 `merged` 列表顺序不一致
-2. 实际可被引用数 < LLM 期望数
+**原因**：模型在步数上限内没有调用 `submit_report`（反复搜索、空转或反思循环）。
 
 **排查**：
 ```bash
-lit-review review "..." --verbose 2>&1 | grep "synthesize_sections"
+lit-review review "..." --verbose --emit-metrics 2>&1 | grep "agent_step"
+cat reports/*.metrics.json | jq '.steps, .tool_calls, .max_steps_reached'
 ```
-看 `papers_kept` 是多少；与 LLM prompt 中的论文数对比
+
+**解决**：
+- 调高 `MAX_AGENT_STEPS`（`.env` 或环境变量，默认 12）
+- 调高 `MAX_REFLECTIONS` 会让反思更容易重复；默认 1 已足够
+- 用更强的 `LLM_MODEL`（gpt-4o > gpt-4o-mini）提高一次到位的概率
+
+## T8. 报告引用与 References 对不上 / 出现编造引用
+
+**症状**：正文出现 `[12]` 但 References 只有 5 篇，或引用了一篇 `list_papers` 里不存在的论文。
+
+**原因**：模型没有严格遵循「先 `list_papers` 再撰写」的约束，自行编造编号。
+
+**排查**：
+```bash
+lit-review review "..." --verbose --emit-metrics 2>&1 | grep "list_papers"
+cat reports/*.metrics.json | jq '.merged.papers_kept'
+```
 
 **解决**：
 - 调小 `top_k`（避免 prompt 拥挤）
-- 用更强的 `LLM_MODEL`（gpt-4o > gpt-4o-mini）
+- 用更强的 `LLM_MODEL`
+- 记住：`submit_report` 的参考文献**永远由工具从真实语料生成**，正文引用必须对得上 `list_papers` 的编号
 
-## T7. refine 节点没有触发，结果很烂
+## T9. 报告生成很慢（>2 分钟）
 
-**症状**：首次拉到的论文 < 5 篇，但 refine 没启动
-
-**原因**：`should_refine` 用了 `iteration < max_iter`，`iteration` 在 plan 节点已经 +1
-
-**排查**：看 `metrics.json`：
-```json
-"iteration": 1,
-"max_iter": 2
-```
-如果 `iteration > max_iter`，下一轮不会触发
-
-**解决**：
-- `--max-iter 3`
-- 或在 `Settings` 调高默认值
-
-## T8. 报告生成很慢（>2 分钟）
-
-**症状**：每次大约 100s+
+**症状**：每次大约 100s+。
 
 **排查**：
 ```bash
 lit-review review "..." --verbose --emit-metrics
-cat reports/*.metrics.json | jq '.nodes'
+cat reports/*.metrics.json | jq '.steps, .tool_calls, .llm'
 ```
 
 可能原因：
+- Agent 步数太多：模型反复搜索/反思
 - 单 source 卡顿：换 `--sources` 组合
 - LLM 慢：模型换成 mini 或换 provider
-- 大量联网重试：`--no-llm` 试一下
 
 **解决**：
-- v0.2 引入异步并发：默认 4 source 同时跑
-- 必要时把 `request_timeout` 调到 15s
+- 必要时把 `REQUEST_TIMEOUT` 调到 15s
+- 用 `--resume` 复用历史记忆，减少从头检索
 
-## T9. `lit-review` 命令找不到
+## T10. `lit-review` 命令找不到
 
 **症状**：`bash: lit-review: command not found`
 
@@ -143,4 +149,3 @@ pip install -e ".[dev,ui]"
 ```bash
 which lit-review
 ```
-

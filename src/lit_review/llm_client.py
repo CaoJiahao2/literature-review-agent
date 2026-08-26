@@ -2,11 +2,11 @@
 
 The goals of this module:
 
-1. Keep ``graph/nodes.py`` free of retry / cache / network-handling code.
+1. Keep the ReAct agent loop free of retry / cache / network-handling code.
 2. Provide a single object that knows about token usage so :mod:`runner` can
-   surface cost data without nodes having to thread it through state.
-3. Offer a *deterministic in-process cache* so re-runs (or refine loops that
-   re-issue similar prompts) cost nothing.
+   surface cost data without the agent loop having to thread it through state.
+3. Offer a *deterministic in-process cache* so re-runs (or reflection steps
+   that re-issue similar prompts) cost nothing.
 4. Fall back gracefully on 429/timeout — never crash a run; surface the issue
    via the ``fallback`` payload.
 
@@ -214,7 +214,8 @@ class LLMClient:
         """Invoke the chat model and return the assistant text.
 
         Returns None when the call ultimately fails after ``max_attempts``.
-        The caller (graph nodes) decides whether to fall back to a skeleton.
+        The caller decides whether to treat ``None`` as a fatal error or to
+        use the ``fallback`` payload.
         """
         if not self.settings.has_llm():
             return None
@@ -293,6 +294,71 @@ class LLMClient:
         if not data and fallback:
             return dict(fallback)
         return data or dict(fallback)
+
+    def bind_tools(self, tools, *, temperature: float = 0.2):
+        """Build and return a chat model with the given LangChain tools bound.
+
+        Returns None when the model cannot be built (e.g. no API key).
+        """
+        if not self.settings.has_llm():
+            return None
+        try:
+            model = self._build_model(temperature)
+        except Exception as exc:
+            log.warning("build_chat_model failed: %s", exc)
+            return None
+        if model is None:
+            return None
+        try:
+            return model.bind_tools(list(tools))
+        except Exception as exc:
+            log.warning("bind_tools failed: %s", exc)
+            return None
+
+    def invoke_chat(
+        self,
+        model,
+        messages,
+        *,
+        tag: str = "agent",
+        max_attempts: int = 3,
+    ) -> Any:
+        """Invoke a bound chat model with retry/backoff and usage accounting.
+
+        Tool-calling agent steps are intentionally **not** cached because their
+        output depends on the full, evolving message transcript. Returns the raw
+        response message (with ``tool_calls`` populated when the model requests a
+        tool) or None when the call ultimately fails.
+        """
+        if model is None:
+            return None
+        last_exc: Optional[BaseException] = None
+        for attempt in range(max_attempts):
+            try:
+                resp = model.invoke(list(messages))
+                self._consume_usage(resp)
+                self.calls += 1
+                self.by_tag[tag] = self.by_tag.get(tag, 0) + 1
+                self._emit_trace(tag, {"cache_hit": False, "attempt": attempt + 1})
+                return resp
+            except Exception as exc:
+                last_exc = exc
+                self.errors.append(f"{tag}: {type(exc).__name__}: {exc}")
+                if not _is_retryable(exc):
+                    log.warning("[%s] non-retryable error: %s", tag, exc)
+                    break
+                sleep_for = _retry_after_seconds(exc) or (1.5 * (attempt + 1))
+                sleep_for = min(sleep_for, 30.0)
+                log.info(
+                    "[%s] retryable error on attempt %d, sleeping %.1fs: %s",
+                    tag,
+                    attempt + 1,
+                    sleep_for,
+                    exc,
+                )
+                time.sleep(sleep_for)
+        log.warning("[%s] giving up after %d attempts: %s", tag, max_attempts, last_exc)
+        return None
 
     # ----- internals ---------------------------------------------------
 

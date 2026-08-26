@@ -1,8 +1,8 @@
 # 状态与数据结构参考
 
-> 所有跨节点传递的数据结构都列在这里。改字段请同时更新本文件。
+> 所有跨 Agent / 工具传递的数据结构都列在这里。改字段请同时更新本文件。
 
-## 1. `Paper` （核心数据单元）
+## 1. `Paper`（核心数据单元）
 
 文件：`src/lit_review/state.py`
 
@@ -44,94 +44,68 @@ class Paper(BaseModel):
 
 ### 派生方法
 
-- **`short_id()`** → 用于 dedupe 的标准 key 格式：
-  ```text
-  doi:<lowercase doi>   (if doi)
-  arxiv:<lowercase id>   (else if arxiv_id)
-  title:<normalized title>  (else)
-  ```
-
-- **`canonical_url()`** → 优先 DOI / arXiv canonical URL；如果都缺但 url 字段指向 openalex 内部 ID，则返回空串避免读者点进无意义链接。
-
-- **`display_ref(n)`** → 一行参考文献：
-  ```text
-  [n] author1, author2, author3 et al. (year). title. venue _source_ [url](url)
-  ```
+- **`short_id()`** → 用于去重的标准 key：`doi:<lower>` / `arxiv:<lower>` / `title:<normalized>`。
+- **`canonical_url()`** → 优先 DOI / arXiv canonical URL；若只剩 openalex 内部 ID 则返回空串。
+- **`display_ref(n)`** → 一行参考文献：`[n] author1, author2, author3 et al. (year). title. venue _source_ [url](url)`。
 
 ## 2. `SearchPlan`
 
-`plan` 节点的输出：
+保留的轻量计划结构（反思工具可引用查询历史）：
 
 ```python
 class SearchPlan(BaseModel):
-    topic_summary: str = ""     # 用 1-2 句概括课题
-    queries: list[str] = []     # 4-6 个关键词查询
-    rationale: str = ""         # LLM 解释为何选这些查询
+    topic_summary: str = ""
+    queries: list[str] = []
+    rationale: str = ""
 ```
 
-## 3. `SectionDraft`
+## 3. `AgentState`
 
-理论上供后续"分章缓存"使用，当前未启用，仅占位。
-
-## 4. `GraphState`
-
-继承自 `dict`，作为 LangGraph 跨节点传递的载体。完整 keys 列表：
-
-### 输入（由 Runner 写入）
+继承自 `dict`，作为 ReAct Agent 的**运行内工作记忆**。每次实例化都获得独立的默认值，
+可变容器（list / dict）在实例化时做防御性拷贝，不会跨实例共享。
 
 | key | 类型 | 默认 | 含义 |
 |---|---|---|---|
-| `topic` | str | 必填 | 课题原文 |
-| `language` | "en"\|"zh" | 自动检测 | 输出语言 |
-| `years` | (int,int)? | 近 5 年 | 出版年份闭区间 |
+| `topic` | str | "" | 课题原文 |
+| `language` | "en"\|"zh" | "en" | 输出语言 |
+| `years` | (int,int)? | None | 出版年份闭区间 |
 | `top_k` | int | 30 | 入选论文数 |
-| `max_iter` | int | 2 | refine 上限 |
-| `no_llm` | bool | False | 强制走骨架模式 |
+| `sources` | list[str] | [] | 启用的 source 名 |
 | `output_path` | str | "report.md" | 报告输出路径 |
-| `verbose` | bool | False | 流式打印节点进度 |
-| `sources` | list[str] | settings.enabled_sources() | 启用的源 |
+| `verbose` | bool | False | 流式打印 Agent 步进度 |
+| `messages` | list[BaseMessage] | [] | ReAct 消息转录（SystemMessage / HumanMessage / AIMessage / ToolMessage） |
+| `papers` | list[Paper] | [] | 本次运行收集的论文（按 short_id 去重） |
+| `plan` | dict | {} | 可选查询计划 |
+| `drafts` | dict[str,str] | {} | 章节草稿（反思与提交之间） |
+| `reflections` | list[dict] | [] | 反思记录（`{"step", "type", "data"}`） |
+| `merged` | list[Paper] | [] | 提交时的 Top-K |
+| `sections` | dict[str,str] | {} | 最终章节正文 |
+| `step` | int | 0 | 当前 ReAct 步数 |
+| `tool_calls` | int | 0 | 已执行工具调用次数 |
+| `done` | bool | False | 是否已调用 submit_report |
+| `errors` | list[str] | [] | 非致命错误 |
 
-### 中间（节点写入）
-
-| key | 类型 | 写入节点 |
-|---|---|---|
-| `plan` | `SearchPlan` | plan_node |
-| `source_results` | `dict[str, list[Paper]]` | search_sources_node |
-| `arxiv_results` | `list[Paper]` | 向后兼容 v1 |
-| `openalex_results` | `list[Paper]` | 向后兼容 v1 |
-| `merged` | `list[Paper]` | dedupe_rank_node / refine_search_node |
-| `iteration` | int | plan_node / refine_search_node |
-| `sections` | `dict[str, str]` | synthesize_sections_node |
-| `errors` | `list[str]` | 各节点累积 |
-
-### 内部通道（`__dunder__`，声明在 GraphState 上以便 LangGraph 跨节点携带）
+### 附加键（运行期写入）
 
 | key | 类型 | 写入者 | 消费方 |
 |---|---|---|---|
-| `__node_times__` | dict[str, int] | 各节点 `timed_node`（由 builder 的包装器带出） | `runner` → `metrics.nodes` |
-| `__dedupe_stats__` | dict[str, int] | dedupe_rank_node / refine_search_node | `runner` → `metrics.merged` |
-| `__llm_client__` | `LLMClient` | `runner.run()` 注入 | 各节点 `_client()` 复用同一实例 |
+| `source_counts` | dict[str, int] | `AgentRuntime.record_papers` | `runner` → `metrics.sources` |
+| `llm_usage` | dict | `ReviewAgent.run`（`LLMClient.snapshot()`） | `runner` → `metrics.llm` |
+| `max_steps_reached` | bool | `ReviewAgent.run`（超步时） | `runner` → `metrics.max_steps_reached` |
 
-> 这些 key 之所以要**声明**在 `GraphState` 上，是因为 LangGraph 只会把
-> schema 里已知的 key 在节点间传递；不声明的 key 会被静默丢弃（v0.2 曾因此
-> 丢失节点耗时与去重统计）。
+## 4. `Settings`（配置）
 
-### 输出（仅 assemble 标记）
-
-| key | 类型 | 含义 |
-|---|---|---|
-| `final_report` | str | 哨兵值 `"ok"`，表示跑完 |
-
-## 5. `Settings`（配置）
-
-文件：`src/lit_review/config.py`。通过 `pydantic-settings` 从 `.env` / 环境变量读取。
-所有字段名都小写，映射 `.env` 中大写同名 key：
+文件：`src/lit_review/config.py`。通过 `pydantic-settings` 从 `.env` / 环境变量读取：
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `llm_api_key` | "" | 任何 OpenAI-compatible Key；空 → 骨架 |
+| `llm_api_key` | "" | 任何 OpenAI-compatible Key；空 → 启动报错 |
 | `llm_base_url` | "https://api.openai.com/v1" | API endpoint |
 | `llm_model` | "gpt-4o-mini" | 模型名 |
+| `max_agent_steps` | 12 | ReAct 最大步数 |
+| `max_reflections` | 1 | 每种反思的最大轮数 |
+| `resume_memory` | False | 是否加载该课题历史记忆 |
+| `memory_dir` | "~/.lit_review/memory" | 跨轮记忆目录 |
 | `arxiv_max_per_query` | 15 | arXiv 每查询最大返回 |
 | `openalex_max_per_query` | 15 | OpenAlex 每查询最大返回 |
 | `huggingface_max_per_query` | 20 | HF 每查询最大返回 |
@@ -140,36 +114,58 @@ class SearchPlan(BaseModel):
 | `huggingface_lookback_days` | 7 | HF trending 回溯天数 |
 | `default_sources` | "arxiv,openalex,huggingface" | 默认启用源 |
 | `request_timeout` | 30.0 | HTTP 超时秒 |
-| `user_agent` | "LiteratureReviewAgent/0.1 (mailto:agent@example.com)" | 必须含 mailto= 才能进 polite pool |
+| `user_agent` | "LiteratureReviewAgent/0.2 (mailto:agent@example.com)" | 必须含 mailto= 才能进 polite pool |
 | `default_year_window` | 5 | 默认拉最近 5 年 |
 
 ### 派生方法
 
-- `enabled_sources() -> list[str]`：解析 `default_sources` 为列表
-- `year_window() -> (int, int)`：基于 `default_year_window` 与当前年
-- `has_llm() -> bool`：判断是否启用 LLM
+- `resolved_memory_dir` → 展开 `~` 并 resolve 后的记忆目录
+- `enabled_sources()` → 解析 `default_sources` 为列表
+- `year_window()` → 基于 `default_year_window` 与当前年
+- `has_llm()` → 是否配置 LLM Key
+
+## 5. 记忆快照（per-topic JSON）
+
+文件：`src/lit_review/memory/store.py`。文件名为 `sha256(normalized topic).json`，
+存于 `memory_dir`。内容：
+
+```json
+{
+  "topic": "...",
+  "language": "en",
+  "years": [2020, 2025],
+  "run_id": "...",
+  "created_at": "...",
+  "updated_at": "...",
+  "output_path": "...",
+  "sections": {"background": "...", "..."},
+  "papers": [{"title": "...", "year": 2024, "..."}],
+  "metrics_summary": {}
+}
+```
+
+只保存最终报告、论文清单与摘要指标，**不保存完整消息转录**（控制体积与隐私）。
 
 ## 6. `Metrics`（可选输出）
 
-文件：`src/lit_review/runner.py`（v0.2 新增）。与 `--emit-metrics` 同步落盘
-为 `<report>.metrics.json`：
+文件：`src/lit_review/runner.py`。与 `--emit-metrics` 同步落盘为 `<report>.metrics.json`：
 
 ```python
 @dataclasses.dataclass
 class Metrics:
-    started_at: str                       # ISO8601
+    started_at: str
     finished_at: str
-    duration_ms: int                      # 整次 run 的墙钟耗时
-    sources: dict[str, int]               # source_name -> 去重前命中数
-    merged: dict[str, int]                # {"clusters_before", "papers_after_dedupe", "kept_after_topk"}
-    llm: dict[str, Any]                   # {"calls", "cache_hits", "tokens_in", "tokens_out", "by_tag", "errors"}
-    nodes: dict[str, int]                 # node_name -> ms（timed_node）
-    sections: dict[str, int]              # section_name -> body 字符数
-    papers_collected: int                 # 各源原始论文总数（未去重）
-    papers_kept: int                      # top-k 截断后保留数
+    duration_ms: int
+    sources: dict[str, int]     # source_name -> 去重前命中数
+    merged: dict[str, int]      # {"papers_collected", "papers_after_dedupe", "kept_after_topk"}
+    llm: dict[str, Any]         # LLMClient.snapshot()
+    nodes: dict[str, int]       # {"agent_steps", "submit_report"}
+    sections: dict[str, int]    # section_name -> body 字符数
+    papers_collected: int
+    papers_kept: int
     errors: list[str]
+    steps: int
+    tool_calls: int
+    reflections: int
+    max_steps_reached: bool
 ```
-
-`merged` 由 `dedupe_rank_node` / `refine_search_node` 写入的
-`__dedupe_stats__` 汇总而来；`llm` 由 `LLMClient.snapshot()` 提供。
-

@@ -2,198 +2,161 @@
 
 > 每条决策给出**问题 → 方案 → 取舍 → 替代方案**。所有"为什么"集中在此。
 
-## D1. 用 LangGraph 而不是普通函数管线？
+## D1. 为什么用单一 ReAct Agent，而不是确定性 LangGraph 流水线？
 
-**问题**：流程是 DAG，但有条件分支（refine 循环）和可失败节点（5 个不同 source）。
+**问题**：文献调研的难点不是"固定步骤"，而是**检索覆盖度不可预知**——什么时候该补搜、
+该搜什么、什么时候可以开始写，不同课题差异很大。
 
-**方案**：采用 LangGraph `StateGraph`，每个节点是纯函数 `(state, settings) -> partial_state`，
-图的状态完全由 `GraphState`（dict）承载。
-
-**为什么**：
-- 节点失败被隔离到 `state.errors`，主流程不停（生产 LLM 任务里"宁可少一个 section 也不要全跑挂"）
-- 条件边 `should_refine` 是声明式的，方便后续插入新条件
-- 兼容 LangGraph 自带的 streaming、子图、checkpoint（后续可启用）
-
-**替代**：直接写 `while True: ...`。问题：测试困难，无法观察到中间状态，无法流式输出。
-
-## D2. 不用 ReAct / Tool Calling，让 LLM 调工具？
-
-**问题**：让 LLM 自己选 source、决定何时调多少次，看起来更"智能"。
-
-**方案**：固定管线：plan → parallel search → dedupe → synthesize。把"用 LLM 选 source"
-放到 **plan 节点**（生成 queries），把"用 LLM 综合多源"放到 **synthesize 节点**。
+**方案**：把 plan → search → dedupe → refine → synthesize 替换为一个 ReAct Agent。
+LLM 通过原生 function calling 自主决定何时检索、何时反思、何时撰写、何时提交。
 
 **为什么**：
-- 论文调研需要**可复现**："同一课题、同一时间，得到的文献池应大致相同"
-- Tool Calling 在小模型上不稳定，固定管线可以用任何 OpenAI-compatible 模型
-- 5 个 source 接口差异巨大（XML / JSON / GraphQL / 倒排索引），用 LLM 调度容易出错
+- 让"检索覆盖度"和"草稿质量"成为 LLM 可自主评估与修正的对象，而不是写死的条件边
+- 工具调用序列本身就是可观测的"思考轨迹"，便于调试与教学演示
+- 最大步数（`max_agent_steps`）作为安全阀，防止 Agent 空转
 
-**替代**：ReAct Agent。代价：成本更高，结果更不可预测。
+**替代**：保留 LangGraph 固定管线。问题：refine 逻辑硬编码，新增数据源要改图；
+不同课题的检索策略无法自适应。
 
-## D3. 跨源去重为什么用"并集 (union-find)" 而不是"按 source 优先级去重"？
+## D2. 为什么用 LangChain 原生 function calling（`bind_tools`），不做 JSON 降级？
 
-**问题**：arXiv-only 论文没有 DOI，OpenAlex-only 论文没有 arxiv id，怎么办？
+**问题**：部分 OpenAI-compatible 端点 / 小模型对 `tool_calls` 支持不稳定。
 
-**方案**：把 doi / arxiv_id / 标准化标题看作 *等价类签名*，任何一项匹配即合并。
+**方案**：只走 `model.bind_tools(TOOLS)` 原生 function calling。端点不支持 `tool_calls`
+时直接报 `ConfigurationError`，不提供"解析 JSON 文本"的降级。
 
 **为什么**：
-- 同一篇论文在 arXiv 和 OpenAlex 上只有 arxiv_id 或只有 doi 是常见情况
-- 用"哪个 source 先来"决定保留，会因为去重顺序不同而丢失信息
-- 并集合并可以无状态扩张，未来加第 6、7 个 source 也不破坏兼容
+- JSON 降级路径会让工具调用格式与错误处理分裂成两套，维护成本高
+- 原生 `tool_calls` 的结构化 args 能保证工具入参类型安全
+- 目标用户（配置 LLM 的开发者）的端点普遍支持 function calling
 
-**替代**：以 title 模糊匹配为主。问题：标题歧义多（同名论文很多）、依赖语言（中英文标题）。
+**替代**：解析模型输出文本中的 JSON。问题：格式脆弱，参数校验困难，容易注入错误。
 
-## D4. 排序公式为何选 0.5·citation + 0.3·recency + 0.2·abstract_richness？
+## D3. 为什么彻底移除 `--no-llm` 骨架模式？
 
-**问题**：如何给异构数据源出一个**公平的单维度**评分？
+**问题**：旧版无 Key 时降级为确定性骨架报告，试图降低试用门槛。
 
-**方案**：三维加权，全部归一化到 [0,1]。
+**方案**：删除骨架路径；无 `LLM_API_KEY` 时 `require_llm()` 抛 `ConfigurationError`。
 
-| 维度 | 公式 | 用意 |
+**为什么**：
+- 骨架报告与 Agent 主线是两套并行的输出逻辑，任何改动都要双份维护
+- 本项目的定位是"展示 Agent 工程实现"，确定性骨架反而稀释了 Agent 的主体性
+- 清晰报错比静默降级更符合"工程实现"的透明度要求
+
+**替代**：保留骨架。问题：两套路径测试爆炸，且用户无法感知自己到底跑的是哪套。
+
+## D4. 两段自我反思为什么要显式做成两个工具？
+
+**问题**：自我反思可以藏在 system prompt 里让模型"脑内完成"，但不可观测、不可控。
+
+**方案**：
+1. `review_search_coverage()` — 用嵌套 LLM 调用批判当前查询覆盖度，返回 gaps 与补搜建议
+2. `review_report_draft(sections=...)` — 用嵌套 LLM 调用批判当前草稿，返回逐节修订意见
+
+两者都写入 `state.reflections`，受 `max_reflections` 上限约束。
+
+**为什么**：
+- 反思成为**可审计的工具调用**，而不是不可见的心智活动
+- 嵌套 LLM 调用复用 `LLMClient.invoke_json` 的缓存 / 重试 / fallback，成本可控
+- 反思结果作为 ToolMessage 回流给主模型，形成真正的"评价 → 行动"闭环
+
+**替代**：在 system prompt 中要求模型自我检查。问题：不可观测，小模型容易跳过。
+
+## D5. 引用防幻觉：为什么 `submit_report` 只接收正文？
+
+**问题**：让 LLM 直接输出参考文献，容易编造不存在的论文。
+
+**方案**：`submit_report(sections: dict[str,str])` 只接收章节正文；参考文献由工具从
+`AgentState.papers` 的真实语料经 `merge_and_rank` 去重排序后自动生成。
+
+**为什么**：
+- 引用来源被工具强制约束为"真正检索到的论文"
+- 正文中的 `[#]` 编号与工具生成的 References 一一对应
+- LLM 仍可负责论证与组织，但无法凭空创造引用
+
+**替代**：让 LLM 直接写 References。问题：幻觉引用是文献综述 Agent 的致命伤。
+
+## D6. 记忆分层：运行内 vs 跨轮
+
+**问题**：Agent 需要短期上下文，也需要跨运行复用历史成果。
+
+**方案**：
+- **运行内记忆**：`AgentState.messages`（消息转录）+ `papers` + `drafts` + `reflections`
+- **跨轮记忆**：每个规范化课题一个 JSON 文件（`sha256(topic).json`），只保存最终报告、
+  论文清单与摘要指标；`--resume` 时注入 system prompt
+
+**为什么**：
+- 完整消息转录体积大、含隐私，不落盘
+- 最终报告 + 论文清单已足够支撑"继续调研"的复用价值
+- 文件按 topic 哈希命名，规范化后大小写 / 空白不影响命中
+
+**替代**：持久化完整消息。问题：体积、隐私、且旧消息可能与新参数冲突。
+
+## D7. 跨源去重为什么用"并集 (union-find)"？
+
+**问题**：arXiv-only 论文没有 DOI，OpenAlex-only 论文没有 arxiv id。
+
+**方案**：把 doi / arxiv_id / 标准化标题看作等价类签名，任何一项匹配即合并（union-find）。
+
+**为什么**：
+- 同一篇论文跨源可能只有部分标识重叠，并集能捕获这些情况
+- 无状态扩张，未来加第 6、7 个 source 也不破坏兼容
+
+**替代**：按 source 优先级去重 / title 模糊匹配。问题：去重顺序敏感 / 同名论文歧义多。
+
+## D8. 排序公式为何选 0.5·citation + 0.3·recency + 0.2·abstract_richness？
+
+**问题**：如何给异构数据源出一个公平的单维度评分。
+
+**方案**：三维加权，全部归一化到 [0,1]（详见 [RANKING.md](./RANKING.md)）。
+
+| 维度 | 权重 | 用意 |
 |---|---|---|
-| citation | `log1p(cites) / log1p(max_cites)` | 让 0~10 引用与 1000+ 引用在同一尺度 |
-| recency | `(year - min_year) / (max_year - min_year)` | 让 2018 与 2024 在同一尺度 |
-| abstract_richness | `min(1, len(abstract) / 1500)` | 抽象长度 ≥1500 字即满分，避免空洞摘要拖累 |
+| citation | 0.5 | 学术价值的通用代理信号 |
+| recency | 0.3 | 综述读者优先看近 2 年进展 |
+| abstract_richness | 0.2 | 宁可读到完整摘要的论文 |
 
-**为什么 0.5 / 0.3 / 0.2**：
-- 0.5 citation：引用是对**学术价值**最通用的代理信号
-- 0.3 recency：综述读者通常希望优先看到近 2 年的进展
-- 0.2 abstract_richness：宁可读到完整摘要的论文，也不要只有 title 的 stub
+**替代**：纯 citation 会漏掉新论文；纯 recency 会奖励水文。
 
-**替代**：纯 citation。会漏掉当年新论文；纯 recency 会奖励水文。
-**当前共识**：用户最常反馈的两个问题是"包含太老的论文"和"包含没摘要的 stub"，
-所以 recency + abstract_richness 各保留一个槽位。
+## D9. 工具签名为什么用 `list[int]` 而不是 `tuple[int,int]`？
 
-**扩展性**：如要引入 venue / categories / source diversity，
-请到 [RANKING.md](./RANKING.md) 看扩展步骤。
+**问题**：计划要求 `years: tuple[int,int]|None`。
 
-## D5. 为什么 source 搜索串行调？还要不要全异步并发？
+**方案**：function-calling 的 JSON Schema 天然只有数组，工具暴露 `Optional[list[int]]`，
+内部 `_year_tuple` 转换为 `(start, end)` 传给 source 客户端。
 
-> 该决策对应 v0.2.0 的优化。
+**为什么**：JSON 没有 tuple 概念；模型也只能生成数组。外部契约与内部类型各取所需。
 
-**问题（v0.1）**：5 个 source × 5 个 query = 25 个 HTTP 调用，全部串行，
-一次完整调研动辄 60-120 秒。
+## D10. LLMClient 为什么新增 `bind_tools` / `invoke_chat`，而不缓存 Agent 步？
 
-**方案（v0.2）**：
-1. 顶层 fan-out：5 个 source 用 `asyncio.gather(...)` 并发
-2. 同 source 内多 query 用 `asyncio.Semaphore(N)` 受控并发
-3. 默认上限：`max_concurrent_sources=4`，单源内 query 并发
-   `max_concurrent_queries_per_source=3`，并叠加每源并发提示
-   （arXiv=3 / OpenAlex=2 / S2=1 / Crossref=2 / HF=1）
-
-**为什么不全放开**：
-- OpenAlex / S2 的 429 限流对并发敏感，盲目全并发反而触发退避
-- 每个 source 的 `<source>_max_per_query` 是单查询返回上界，不是越大越好
-- 用户的网速 / DNS 也常常成为瓶颈
-
-**替代**：把 source 也丢到 LangGraph 节点，每个 source 一个节点并行。
-问题：langgraph 节点之间共享 client 不如 asyncio 灵活，且需引入 conditional edge 判断"是否完成"。
-
-## D6. LLM 章节合成为什么不用一次 prompt 生成整篇报告？
-
-**问题**：一次 prompt 让 LLM 输出一整篇 5 章节综述。
-
-**方案**：每章节一次 LLM 调用，输入只用 Top-K 子集 + 章节 prompt。
-
-**为什么**：
-- 长上下文会让小模型把章节混在一起
-- 章节之间独立失败，便于降级到骨架
-- 章节之间可以并行（v0.2 引入）
-- 后续可以做"对单章节重写"的人机循环
-
-**替代**：一次 prompt。代价：出错概率随长度指数增长，无法局部重写。
-
-## D7. 为什么默认不带 LLM Key 也能跑？
-
-**问题**：用户首次试用不想配 Key，但又需要看到价值。
+**问题**：Agent 循环调用依赖完整演化中的消息转录，缓存是否还适用？
 
 **方案**：
-- `Settings.has_llm()` 检测，无 Key 时 `build_chat_model() → None`
-- 节点代码路径：`if model is None: skeleton_body()`
-- 章节就是"占位文字 + 来自 Top-K 的论文清单 + 引用"
+- `bind_tools()` / `invoke_chat()` 专门服务 Agent 循环：带重试、token 统计，但**不缓存**
+- 反思子调用继续走 `invoke_json`（有缓存与 fallback）
 
-**为什么**：骨架报告足以让用户体验"我搜到了 N 篇相关论文"，是真正的价值锚点。
+**为什么**：Agent 步的输入是动态增长的消息列表，缓存命中率低且可能返回过期结果；
+反思 prompt 则相对静态，缓存收益明显。
 
-**替代**：强制要求 Key。结果：试用人数减半。
+**替代**：全缓存。问题：Agent 步缓存 key 巨大且内容易变，命中率低。
 
-## D8. LangChain 的 BaseChatModel 而不是裸调用 openai SDK？
+## D11. 为什么 `run()` 保持入口签名不变？
 
-**问题**：选 `langchain-openai` 还是直接 `openai.OpenAI()`。
+**问题**：重构后 CLI / UI 已改动，`runner.run` 的签名还要不要变？
 
-**方案**：用 `langchain_openai.ChatOpenAI`，任何 OpenAI-compatible 端点都通过。
+**方案**：`runner.run(state, settings, *, emit_metrics, emit_state, on_node) -> RunResult`
+保持不变，内部改调 `ReviewAgent`；`RunResult.state` 从 `GraphState` 换成 `AgentState`。
 
-**为什么**：
-- 与 LangGraph 节点无缝集成
-- `BaseChatModel.invoke()` 返回 `AIMessage`，自带 retry / token 用量元数据
-- 切换 Anthropic / Gemini 也只需换一个 import
-
-**替代**：直接 openai SDK。代价：绑定 OpenAI；retry 与 streaming 要自己写。
-
-## D9. 配置：用 .env + pydantic-settings 而不是 argparse
-
-**问题**：CLI 参数很多 + 又有环境变量要兼容。
-
-**方案**：
-- 静态配置（Key、端口、超时） → `Settings`（pydantic-settings 读 `.env`）
-- 每次调用的查询语义（topic、top_k）→ CLI 参数
-
-**为什么**：
-- 配置和参数关注点分离
-- `lit-review config` 子命令可打印当前生效值
-- 多组件共用 `Settings`，没有"再读一遍 .env"的散落
-
-**替代**：全 CLI。问题：长度爆炸；运行时改 config 不方便。
-
-## D10. Gradio UI 与 CLI 的关系？
-
-**问题**：两条执行链怎么避免实现重复？
-
-**方案（v0.2）**：
-- 引入 `runner.run(state) -> RunResult` 作为**唯一入口**
-- CLI 调用 `runner.run()` 后再渲染 console 输出
-- UI 调用 `runner.run()` 然后用 Gradio 渲染
-
-**为什么**：
-- 之前 UI 直接 import `cli._do_run`（私有函数），耦合严重
-- `runner` 既能被 stream 也能被 invoke（同步包装），通用
-
-**替代**：复制一份 `_do_run`。问题：维护地狱，测试时两边都要改。
-
-## D11. 为什么不内置引文图 / 主题聚类？
-
-**问题**：综述作者通常还会想要"研究主题聚类"。
-
-**现状**：不做。
-
-**为什么**：
-- 主题聚类（非监督）质量不稳定
-- 引文图（要拉 Semantic Scholar 的 `citations` 字段，会 429）
-- 都属于"可以做但不值得糊一脸"的特性，先保持轻量
-
-**未来路线**：可作为 v0.4.0 的可选插件，不进入主线。
+**为什么**：CLI 与 UI 都通过 `runner.run` 这个唯一入口，签名稳定可减少上层改动；
+测试也只需替换 `ReviewAgent` 即可离线跑通全流程。
 
 ## D12. 测试策略：离线优先 + 网络标记
 
 **问题**：开发期间不能每次都跑真实 API，但又要保证 source 客户端可用。
 
 **方案**：
-- 离线测试：`tests/test_<x>.py` 用最小 fixture 验证解析器 / 去重 / 评分
+- 离线测试：`tests/test_<x>.py` 用 fake model / respx mock 验证循环、工具、记忆、反思
 - 网络测试：`@pytest.mark.network` 标记，默认 CI 跳过
-- CI 推荐命令：`pytest -m "not network"`
+- CI 推荐命令：`pytest -q -m "not network"`
 
-**替代**：mock 一切。问题：mock 与真实 API 行为分歧会随着版本漂移。
-
-## D13. 在哪里放可观测性？(metrics / structured logs)
-
-**决策**：v0.2 起在每节点用 `timed_node` 上下文管理器计时，把耗时写进
-   `__node_times__` 通道（graph builder 的包装器把它带出节点，`runner` 汇总进
-   `metrics.json`）；`LLMClient` 内部累加 token usage 和调用次数；CLI
-   `--verbose` 通过 `runner.on_node` 逐节点实时打印。
-   完整规格见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
-
-## D14. 安全/限流：USER_AGENT 与 mailto
-
-**决策**：所有 HTTP 都带 `USER_AGENT=LiteratureReviewAgent/0.1 (mailto:you@example.com)`。
-   OpenAlex/Crossref 解析 `mailto=` 并自动加入参数，进入 polite pool。
-   README 显式提示这点。
-
+**替代**：mock 一切。问题：mock 与真实 API 行为分歧会随版本漂移。

@@ -28,13 +28,13 @@ def search_<name>(
 1. 输入：`settings`、`queries`（可迭代 str），可选 `max_per_query`、`years`
 2. 输出：`list[Paper]`，允许为空；空时仍应在 state 上登记 0 命中
 3. **绝不抛异常**：HTTP / 解析错误要捕获并 log warning，**返回空列表**；
-   调用方 `run_sources` 会把异常聚到 `state.errors`
+   ReAct 工具的包装层（`agent/tools.py`）会把异常聚到 `state.errors`
 4. **去重**：源内已查到的论文要去重（用 `arxiv_id`/`doi` 缓存 `seen` 集合）
 5. **年份过滤**：在客户端做（拿到结果后立刻丢），不依赖远端
 
 ## 2. 注册位置
 
-文件：`src/lit_review/tools/__init__.py`
+数据源客户端注册在 `src/lit_review/tools/__init__.py`：
 
 ```python
 from .<new_source> import search_<new_source>
@@ -54,6 +54,21 @@ SOURCE_FNS = {
     "<new_source>": search_<new_source>,    # 2. 注册函数
 }
 ```
+
+**作为 ReAct 工具暴露给 Agent**：在 `src/lit_review/agent/tools.py` 的
+`build_tools()` 里加一行包装，复用 `_make_search_tool`：
+
+```python
+tools: list[StructuredTool] = [
+    _make_search_tool(runtime, "search_arxiv", "arxiv", search_arxiv),
+    ...
+    _make_search_tool(runtime, "search_<new_source>", "<new_source>", search_<new_source>),
+]
+```
+
+`_make_search_tool` 会生成统一的 function-calling schema
+`(query: str, max_results: int, years: list[int] | None) -> str`，
+并把返回的 `Paper` 记录进 `AgentState.papers`（按 `short_id` 去重）。
 
 也必须更新：
 
@@ -86,12 +101,12 @@ from .<name>_async import search_<name>_async
 _async_runner.register_async_source("<name>", search_<name>_async)
 ```
 
-`runner.run()` 会按 async 注册表优先 fan-out，未实现 async 的源自动回退到
-`asyncio.to_thread`（调用同步版）。
-
-> 注意：async 路径的每查询返回上限来自 `Settings` 的
-> `<source>_max_per_query` 字段（`async_runner._cap_from_settings`），
-> 与同步路径一致，新增源时记得在 `config.py` 加对应字段。
+> 注意：当前 ReAct Agent 的搜索工具走同步客户端（每个查询一次调用），
+> async 注册表保留给 `tools.run_sources_async` 与后续并发搜索优化使用。
+> 未实现 async 的源自动回退到 `asyncio.to_thread`（调用同步版）。
+> async 路径的每查询返回上限来自 `Settings` 的 `<source>_max_per_query`
+> 字段（`async_runner._cap_from_settings`），与同步路径一致，新增源时记得
+> 在 `config.py` 加对应字段。
 
 ## 4. 必须的测试
 
@@ -118,95 +133,4 @@ def test_search_xxx_live(settings):
 ```
 
 CI 推荐：`pytest -m "not network"` 跑默认。
-
-## 5. 完整新源示例（伪代码）
-
-```python
-# src/lit_review/tools/example.py
-from __future__ import annotations
-import httpx, logging
-from typing import Iterable, Optional
-from ..config import Settings
-from ..state import Paper
-from ._http import get_client, safe_get
-
-log = logging.getLogger(__name__)
-
-
-def _parse(raw: dict, year_filter: Optional[tuple[int, int]]) -> Optional[Paper]:
-    title = (raw.get("title") or "").strip()
-    if not title:
-        return None
-    year = raw.get("year")
-    if year_filter and year and not (year_filter[0] <= year <= year_filter[1]):
-        return None
-    return Paper(
-        title=title,
-        authors=raw.get("authors", []),
-        year=year,
-        abstract=raw.get("abstract", ""),
-        doi=raw.get("doi", "").lower(),
-        url=raw.get("url", ""),
-        citation_count=raw.get("cited_by"),
-        source="example",
-    )
-
-
-def search_example(
-    settings: Settings,
-    queries: Iterable[str],
-    *,
-    max_per_query: Optional[int] = None,
-    years: Optional[tuple[int, int]] = None,
-) -> list[Paper]:
-    cap = max_per_query or settings.example_max_per_query
-    out: list[Paper] = []
-    with get_client(settings) as client:
-        for q in queries:
-            q = q.strip()
-            if not q:
-                continue
-            resp = safe_get(
-                client,
-                "https://api.example.com/v1/search",
-                params={"q": q, "limit": cap},
-            )
-            if resp is None:
-                continue
-            try:
-                data = resp.json()
-            except Exception:
-                continue
-            for raw in data.get("hits", []):
-                p = _parse(raw, years)
-                if p is not None:
-                    out.append(p)
-    return out
-
-
-async def search_example_async(
-    client: httpx.AsyncClient,
-    settings: Settings,
-    queries: Iterable[str],
-    *,
-    max_per_query: int,
-    years: Optional[tuple[int, int]],
-) -> list[Paper]:
-    cap = max_per_query
-    out: list[Paper] = []
-    tasks = []
-    async def _one(q: str):
-        if not q.strip():
-            return []
-        r = await client.get(
-            "https://api.example.com/v1/search",
-            params={"q": q, "limit": cap},
-        )
-        ...
-    results = await asyncio.gather(*(_one(q) for q in queries), return_exceptions=True)
-    for r in results:
-        if isinstance(r, list):
-            out.extend(r)
-    return out
-```
-
+ReAct 工具层的离线测试见 `tests/test_tools.py`（用 `respx` mock HTTP）。

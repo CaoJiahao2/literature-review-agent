@@ -1,9 +1,10 @@
-"""State schemas shared across the LangGraph nodes.
+"""Shared state types for the ReAct literature-review agent.
 
-A `Paper` is the canonical record produced by every source tool. Sources may
-fill only a subset of fields (e.g. arXiv has no citation count, OpenAlex has
-no arxiv id when the work isn't on arXiv) — the rank/merge step reconciles
-them.
+A `Paper` remains the canonical record produced by every source tool. The old
+LangGraph `GraphState` pipeline has been replaced by a single ReAct agent whose
+working memory is an `AgentState` dict: the LLM message transcript, collected
+papers, section drafts, and reflection notes all live here for the duration of
+one run.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ class Paper(BaseModel):
     source: str = ""  # "arxiv" | "openalex" | "merged"
     extra: dict[str, Any] = Field(default_factory=dict)
 
-    # Filled by rank.merge_papers; used for sorting and dedupe.
+    # Filled by rank.merge_and_rank; used for sorting and dedupe.
     dedupe_key: str = ""
     score: float = 0.0
 
@@ -72,57 +73,78 @@ class Paper(BaseModel):
 
 
 class SearchPlan(BaseModel):
-    """Output of the `plan` node: keyword queries + a topic framing."""
+    """Output of the agent's initial planning step."""
 
     topic_summary: str = ""
     queries: list[str] = Field(default_factory=list)
     rationale: str = ""
 
 
-class SectionDraft(BaseModel):
-    name: str
-    title: str
-    body: str = ""
+class AgentState(dict):
+    """In-run working memory for the ReAct agent.
 
-
-class GraphState(dict):
-    """LangGraph state container.
-
-    LangGraph passes dicts through nodes; we use a plain dict subclass with
-    documented keys so any node can read/write safely.
-
-    The ``__dunder__`` keys are **internal channels** that must be declared
-    here: LangGraph only carries keys it knows about across nodes, so an
-    undeclared key (e.g. one a node writes in place) would be silently
-    stripped from the state and lost.
+    LangChain tool functions mutate this dict through a shared `AgentRuntime`;
+    it is also the object returned in `RunResult.state`. The agent transcript
+    lives in `messages`; retrieved papers accumulate in `papers`; section text
+    accumulates in `drafts`.
     """
-
-    # Internal channels — see module docstring for why they're declared.
-    __node_times__: dict[str, int] = {}
-    __dedupe_stats__: dict[str, int] = {}
-    __llm_client__: Any = None
 
     topic: str
     language: str = "en"
     years: Optional[tuple[int, int]] = None
     top_k: int = 30
-    max_iter: int = 2
-    no_llm: bool = False
+    sources: list[str] = []
     output_path: str = "report.md"
     verbose: bool = False
-    sources: list[str] = []   # which sources to query; populated from Settings if empty
 
-    plan: Optional[SearchPlan] = None
-    # Generic source-keyed results (replaces the per-source arxiv_results/openalex_results
-    # keys used in v1). v1 keys are still written for back-compat with old callers.
-    source_results: dict[str, list[Paper]] = {}
-    arxiv_results: list[Paper] = []
-    openalex_results: list[Paper] = []
-    merged: list[Paper] = []
-    iteration: int = 0
-    sections: dict[str, str] = {}
-    final_report: str = ""
+    messages: list[Any] = []          # langchain_core.messages.BaseMessage
+    papers: list[Paper] = []          # all papers collected this run (deduped lazily)
+    plan: dict[str, Any] = {}
+    drafts: dict[str, str] = {}
+    reflections: list[dict[str, Any]] = []
+    merged: list[Paper] = []          # Top-K after submit_report
+    sections: dict[str, str] = {}     # alias kept for report writer compatibility
+    step: int = 0
+    tool_calls: int = 0
+    done: bool = False
     errors: list[str] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        # Each instance gets its own fresh defaults; mutable containers are
+        # never shared across instances (the class-level annotations above are
+        # documentation only, not instance defaults).
+        self.update(
+            {
+                "topic": "",
+                "language": "en",
+                "years": None,
+                "top_k": 30,
+                "sources": [],
+                "output_path": "report.md",
+                "verbose": False,
+                "messages": [],
+                "papers": [],
+                "plan": {},
+                "drafts": {},
+                "reflections": [],
+                "merged": [],
+                "sections": {},
+                "step": 0,
+                "tool_calls": 0,
+                "done": False,
+                "errors": [],
+            }
+        )
+        # Caller-supplied values override defaults; mutable containers are
+        # defensively copied so callers cannot accidentally share references.
+        for key, value in kwargs.items():
+            if isinstance(value, dict):
+                self[key] = dict(value)
+            elif isinstance(value, list):
+                self[key] = list(value)
+            else:
+                self[key] = value
 
 
 def _norm_title(title: str) -> str:
